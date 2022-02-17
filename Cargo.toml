@@ -11,8 +11,7 @@ categories = ["embedded", "hardware-support", "no-std"]
 
 homepage = "https://github.com/TomasVanRoose/RF24-rs"
 readme = "README.md"
-edition = "2018"
-rust = "1.50.0"
+edition = "2021"
 
 exclude = [
     "examples/",
