@@ -133,6 +133,8 @@ where
         // flush buffers
         chip.flush_rx()?;
         chip.flush_tx()?;
+        // Set auto ack
+        chip.set_auto_ack(config.auto_ack_enabled)?;
 
         // clear CONFIG register, Enable PTX, Power Up & 16-bit CRC
         if let Some(encoding_scheme) = config.crc_encoding_scheme {
@@ -483,6 +485,20 @@ where
             Register::SETUP_RETR,
             (auto_retry.raw_delay() << 4) | (auto_retry.count()),
         )
+    }
+
+    /// Set auto acknowledgement
+    pub fn set_auto_ack(&mut self, enable: bool) -> Result<(), TransferError<SPIErr, PinErr>> {
+        if enable {
+            self.write_register(Register::EN_AA, 0x3F)?;
+        } else {
+            self.write_register(Register::EN_AA, 0)?;
+
+            let old_reg = self.read_register(Register::FEATURE)?;
+            self.write_register(Register::FEATURE, old_reg | !(1 << 1))?;
+        }
+
+        Ok(())
     }
 
     /// Returns the auto retransmission config.
