@@ -122,25 +122,24 @@ where
         chip.set_retries(config.auto_retry)?;
         // Set rf
         chip.setup_rf(config.data_rate, config.pa_level)?;
+        // Set auto ack
+        chip.set_auto_ack(config.auto_ack_enabled)?;
         // Set payload size
         chip.set_payload_size(config.payload_size)?;
         // Set address length
         chip.set_address_width(config.addr_width)?;
-        // Reset status
-        chip.reset_status()?;
         // This channel should be universally safe and not bleed over into adjacent spectrum.
         chip.set_channel(config.channel)?;
+        // Reset status
+        chip.reset_status()?;
         // flush buffers
         chip.flush_rx()?;
         chip.flush_tx()?;
-        // Set auto ack
-        chip.set_auto_ack(config.auto_ack_enabled)?;
 
         // clear CONFIG register, Enable PTX, Power Up & 16-bit CRC
         if let Some(encoding_scheme) = config.crc_encoding_scheme {
             chip.enable_crc(encoding_scheme)?;
         }
-
         chip.config_reg = chip.read_register(Register::CONFIG)?;
 
         chip.power_up(delay)?;
