@@ -2,7 +2,7 @@
 
 use crate::config::{
     AddressWidth, AutoRetransmission, DataPipe, DataRate, EncodingScheme, Mode, NrfConfig, PALevel,
-    PayloadSize,
+    PayloadSize, PipeAddress, PipeConfig, PipeState, PipesPayloadSize, StaticPayloadSize,
 };
 use crate::error::TransferError;
 use crate::hal::blocking::{
@@ -88,12 +88,12 @@ where
     /// let nrf24 = nrf24_rs::Nrf24l01::new(spi, ce, ncs, &mut delay, NrfConfig::default())?;
     ///
     /// ```
-    pub fn new<D>(
+    pub fn new<D, const N: usize>(
         spi: SPI,
         ce: CE,
         ncs: NCS,
         delay: &mut D,
-        config: NrfConfig,
+        config: NrfConfig<N>,
     ) -> Result<Self, TransferError<SPIErr, PinErr>>
     where
         D: DelayMs<u8>,
@@ -125,7 +125,7 @@ where
         // Set auto ack
         chip.set_auto_ack(config.auto_ack_enabled)?;
         // Set payload size
-        chip.set_payload_size(config.payload_size)?;
+        chip.configure_rx_pipes(config.pipe_config)?;
         // Set address length
         chip.set_address_width(config.addr_width)?;
         // This channel should be universally safe and not bleed over into adjacent spectrum.
@@ -273,6 +273,83 @@ where
         self.config_reg &= !0b1;
         self.write_register(Register::CONFIG, self.config_reg)?;
 
+        Ok(())
+    }
+
+    /// Configure receive pipes.
+    ///
+    /// # Examples
+    /// ```rust
+    /// chip.
+    /// ```
+    ///
+    pub fn configure_rx_pipes<const N: usize>(
+        &mut self,
+        config: PipeConfig<N>,
+    ) -> Result<(), TransferError<SPIErr, PinErr>> {
+        let enable_ack = config.has_ack_enabled_pipe();
+
+        match config.pipes {
+            PipesPayloadSize::Dynamic(d) => {
+                let feature = self.read_register(Register::FEATURE)?;
+                self.write_register(Register::CONFIG, feature | (1 << 2))?;
+                self.write_register(Register::DYNPD, 0b0001_1111)?;
+
+                for (i, p) in d.0.iter().enumerate() {
+                    match p {
+                        PipeState::Enable(p) => self.configure_rx_pipe(i as u8, None, p.0, p.1)?,
+                        _ => (),
+                    }
+                }
+
+                self.payload_size = PayloadSize::Dynamic;
+            }
+            PipesPayloadSize::Static(s) => {
+                let feature = self.read_register(Register::FEATURE)?;
+                self.write_register(Register::CONFIG, feature & !(1 << 2))?;
+
+                for (i, p) in s.0.iter().enumerate() {
+                    match p {
+                        PipeState::Enable(p) => {
+                            self.payload_size = p.0.into();
+                            self.configure_rx_pipe(i as u8, Some(p.0.truncate()), p.1, p.2)?
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn configure_rx_pipe<T: Into<DataPipe>, const N: usize>(
+        &mut self,
+        pipe: T,
+        payload_len: Option<StaticPayloadSize>,
+        auto_ack: bool,
+        address: PipeAddress<N>,
+    ) -> Result<(), TransferError<SPIErr, PinErr>> {
+        let pipe: DataPipe = pipe.into();
+        let old_reg = self.read_register(Register::EN_RXADDR)?; // Read old value
+        self.write_register(Register::EN_RXADDR, old_reg | (1 << pipe.pipe()))?;
+        if auto_ack {
+            self.write_register(Register::EN_AA, 1 << pipe.pipe())?;
+        }
+        if let Some(payload_len) = payload_len {
+            let register = match pipe.pipe() {
+                0u8 => Register::RX_PW_P0,
+                1 => Register::RX_PW_P0,
+                2 => Register::RX_PW_P0,
+                3 => Register::RX_PW_P0,
+                4 => Register::RX_PW_P0,
+                5 => Register::RX_PW_P0,
+                _ => unreachable!(),
+            };
+            self.write_register(register, *payload_len)?;
+        }
+        let rx_address_reg: Register = pipe.into();
+        self.write_register(rx_address_reg, address)?;
         Ok(())
     }
 
@@ -1101,7 +1178,7 @@ where
 /// A trait representing a type that can be turned into a buffer.
 ///
 /// Is used for representing single values as well as slices as buffers.
-trait IntoBuf<T> {
+pub(crate) trait IntoBuf<T> {
     fn into_buf(&self) -> &[T];
 }
 
