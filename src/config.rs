@@ -14,6 +14,10 @@
 //! * `payload_size`:           static payload size of [`MAX_PAYLOAD_SIZE`] bytes.
 //! * `pa_level`:               min amplification level.
 //!
+use core::marker::PhantomData;
+use core::ops::Deref;
+
+use crate::nrf24::IntoBuf;
 use crate::MAX_PAYLOAD_SIZE;
 use crate::{register_acces::Register, status::Status};
 #[cfg(feature = "micro-fmt")]
@@ -54,8 +58,8 @@ const MAX_CHANNEL: u8 = 125;
 /// let mut chip = Nrf24l01::new(spi, ce, ncs, delay, config)?;
 /// ```
 #[derive(Copy, Debug, Clone)]
-pub struct NrfConfig {
-    pub(crate) payload_size: PayloadSize,
+pub struct NrfConfig<const N: usize> {
+    pub(crate) pipe_config: PipeConfig<N>,
     pub(crate) channel: u8,
     pub(crate) addr_width: AddressWidth,
     pub(crate) data_rate: DataRate,
@@ -66,12 +70,12 @@ pub struct NrfConfig {
     pub(crate) auto_ack_enabled: bool,
 }
 
-impl NrfConfig {
+impl<const N: usize> NrfConfig<N> {
     /// Set Payload Size
     /// A value of 0 means dynamic payloads will be enabled.
     /// Values greater than [`MAX_PAYLOAD_SIZE`] will be floored.
-    pub fn payload_size<T: Into<PayloadSize>>(mut self, payload_size: T) -> Self {
-        self.payload_size = payload_size.into();
+    pub fn rx_pipe_config<A: Into<PipeConfig<N>>>(mut self, pipe_config: A) -> Self {
+        self.pipe_config = pipe_config.into();
         self
     }
     /// Set RF channel
@@ -120,11 +124,11 @@ impl NrfConfig {
     }
 }
 
-impl Default for NrfConfig {
+impl Default for NrfConfig<5> {
     fn default() -> Self {
         Self {
             channel: 76,
-            payload_size: PayloadSize::default(),
+            pipe_config: PipeConfigBuilder::<Static, 5>::default().inner,
             addr_width: AddressWidth::default(),
             crc_encoding_scheme: Some(EncodingScheme::R2Bytes),
             pa_level: PALevel::default(),
@@ -137,14 +141,14 @@ impl Default for NrfConfig {
 }
 
 #[cfg(feature = "micro-fmt")]
-impl uDebug for NrfConfig {
+impl<const N: usize> uDebug for NrfConfig<N> {
     fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
     where
         W: uWrite,
     {
         f.debug_struct("nRF configuration")?
             .field("channel", &self.channel)?
-            .field("payload size", &self.payload_size)?
+            .field("rx_pipe_config", &self.pipe_config)?
             .field("power amplification level", &self.pa_level)?
             .field("data rate", &self.data_rate)?
             .field("auto retransmission", &self.auto_retry)?
@@ -154,6 +158,414 @@ impl uDebug for NrfConfig {
             )?
             .field("address width", &self.addr_width)?
             .field("crc encoding scheme", &self.crc_encoding_scheme)?
+            .finish()
+    }
+}
+
+/// A trait used by the `PipeConfigBuilder` struct to determine if it should build a config with a static or dynamic payload configuration.
+pub trait PayloadSizedType {}
+
+/// The static variant of the payload type.
+#[derive(Debug, Clone, Copy)]
+pub struct Static;
+/// The static variant of the payload type.
+#[derive(Debug, Clone, Copy)]
+pub struct Dynamic;
+
+impl PayloadSizedType for Static {}
+impl PayloadSizedType for Dynamic {}
+
+/// A builder to build the rx pipe configuration in a convenient way.
+#[derive(Debug, Clone, Copy)]
+pub struct PipeConfigBuilder<T, const N: usize> {
+    inner: PipeConfig<N>,
+    payload_size_type: PhantomData<T>,
+}
+
+/// Configuration of the receive pipes p0-p5.
+#[derive(Debug, Clone, Copy)]
+pub struct PipeConfig<const N: usize> {
+    pub(crate) pipes: PipesPayloadSize<N>,
+}
+
+impl<const N: usize> PipeConfig<N> {
+    /// Start building a pipe config with a static payload. This means, for every enabled pipe a static payload must be specified.
+    pub fn static_payload() -> PipeConfigBuilder<Static, N> {
+        PipeConfigBuilder::static_payload()
+    }
+
+    /// Start building a pipe config resulting in a dynamic payload setup. This means, the module determines dynamically the payload size of a packet.
+    pub fn dynamic_payload() -> PipeConfigBuilder<Dynamic, N> {
+        PipeConfigBuilder::dynamic_payload()
+    }
+}
+
+impl<T: PayloadSizedType, const N: usize> From<PipeConfigBuilder<T, N>> for PipeConfig<N> {
+    fn from(p: PipeConfigBuilder<T, N>) -> Self {
+        p.inner
+    }
+}
+
+/// A enum to differentiate between the static and dynamic payload config.
+#[derive(Debug, Clone, Copy)]
+pub enum PipesPayloadSize<const N: usize> {
+    /// Dynamic payload config variant.
+    Dynamic(PipesDynamicSized<N>),
+    /// Static payload config variant.
+    Static(PipesStaticSized<N>),
+}
+
+#[cfg(feature = "micro-fmt")]
+impl<const N: usize> uDebug for PipesPayloadSize<N> {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        match self {
+            PipesPayloadSize::Dynamic(e) => f
+                .debug_struct("dynamic payloads")?
+                .field("pipes", &e.0[0])?
+                .finish(),
+            PipesPayloadSize::Static(e) => f
+                .debug_struct("dynamic payloads")?
+                .field("pip0", &e.0[0])?
+                .finish(),
+        }
+    }
+}
+
+/// A enum to configure the pipe either as enabled or disabled.
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub enum PipeState<T> {
+    /// The enabled variant. Holds more config infos for the pipe.
+    Enable(T),
+    /// The disabled variant.
+    Disable,
+}
+
+#[cfg(feature = "micro-fmt")]
+impl<T: uDebug> uDebug for PipeState<T> {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        match self {
+            PipeState::Enable(p) => uwrite!(f, "Enabled Pipe {:?}", p),
+            PipeState::Disable => uwrite!(f, "Disabled Pipe"),
+        }
+    }
+}
+
+/// A enum to differentiate between long pipe addresses and short ones.
+/// In general the nrf module has two pipes with a address len of max. 5 bytes, which is configurable.
+/// The other pipes can be configured with one byte. They share the first bytes of the long addresses.
+///
+///         Byte4 Byte3 Byte2 Byte1 Byte0
+/// PIPE 0  0xE7  0xD3  0xF0  0x35  0x77
+/// PIPE 1  0xC2  0xC2  0xC2  0xC2  0xC2
+/// PIPE 2  0xC2  0xC2  -""-  -""-  0xC3
+/// PIPE 3  -""-  -""-  -""-  -""-  0xC4
+/// PIPE 4  -""-  -""-  -""-  -""-  0xC5
+/// PIPE 5  -""-  -""-  -""-  -""-  0xC6
+///
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub enum PipeAddress<const N: usize> {
+    /// A long with N bytes configurable address.
+    Long([u8; N]),
+    /// Address based on one Byte.
+    Short(u8),
+}
+
+impl<const N: usize> IntoBuf<u8> for PipeAddress<N> {
+    fn into_buf(&self) -> &[u8] {
+        match self {
+            PipeAddress::Long(a) => a.as_slice(),
+            PipeAddress::Short(a) => core::slice::from_ref(a),
+        }
+    }
+}
+
+impl<const N: usize> From<&str> for PipeAddress<N> {
+    fn from(s: &str) -> Self {
+        let mut buffer = [0u8; N];
+        buffer.copy_from_slice(s[0..N].as_bytes());
+        Self::Long(buffer)
+    }
+}
+
+impl<const N: usize> From<&[u8]> for PipeAddress<N> {
+    fn from(s: &[u8]) -> Self {
+        let mut buffer = [0u8; N];
+        buffer.copy_from_slice(&s[0..N]);
+        Self::Long(buffer)
+    }
+}
+
+#[cfg(feature = "micro-fmt")]
+impl<const N: usize> uDebug for PipeAddress<N> {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        match self {
+            PipeAddress::Long(a) => uwrite!(f, "Pipe Address: {:?}", a.as_slice()),
+            PipeAddress::Short(a) => uwrite!(f, "Pipe Address: {}", a),
+        }
+    }
+}
+
+/// Contains the pipe config for dynamic sized payloads.
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub struct PipesDynamicSized<const N: usize>(pub(crate) [PipeState<(bool, PipeAddress<N>)>; 6]);
+
+struct PipesDynamicSizedIterator<'a, const N: usize> {
+    index: u8,
+    pipes: &'a PipesDynamicSized<N>,
+}
+
+impl<'a, const N: usize> Iterator for PipesDynamicSizedIterator<'a, N> {
+    type Item = &'a PipeState<(bool, PipeAddress<N>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index > 5 {
+            return None;
+        }
+        let pipe = &self.pipes.0[0];
+        self.index += 1;
+        Some(pipe)
+    }
+}
+
+/// Contains the pipe config for static sized payloads.
+#[derive(PartialEq, Eq, Copy, Clone, Debug)]
+pub struct PipesStaticSized<const N: usize>(
+    pub(crate) [PipeState<(StaticPayloadSize, bool, PipeAddress<N>)>; 6],
+);
+
+macro_rules! pipe_config_static_payload_long_addr_enable {
+    ( $func_name:ident, $x:expr ) => {
+        /// Enables the nth pipe with a static payload configuration.
+        pub fn $func_name<T: Into<StaticPayloadSize>>(
+            mut self,
+            payload_size: T,
+            enable_auto_ack: bool,
+            pipe_addr: &[u8],
+        ) -> Self {
+            match self.inner.pipes {
+                PipesPayloadSize::Static(ref mut s) => {
+                    s.0[$x] = PipeState::Enable((
+                        payload_size.into(),
+                        enable_auto_ack,
+                        PipeAddress::from(pipe_addr),
+                    ))
+                }
+                _ => unreachable!(),
+            }
+            self
+        }
+    };
+}
+
+macro_rules! pipe_config_static_payload_short_addr_enable {
+    ( $func_name:ident, $x:expr ) => {
+        /// Enables the nth pipe with a static payload configuration.
+        pub fn $func_name<T: Into<StaticPayloadSize>>(
+            mut self,
+            payload_size: T,
+            enable_auto_ack: bool,
+            pipe_addr: u8,
+        ) -> Self {
+            match self.inner.pipes {
+                PipesPayloadSize::Static(ref mut s) => {
+                    s.0[$x] = PipeState::Enable((
+                        payload_size.into(),
+                        enable_auto_ack,
+                        PipeAddress::Short(pipe_addr),
+                    ))
+                }
+                _ => unreachable!(),
+            }
+            self
+        }
+    };
+}
+
+macro_rules! pipe_config_dynamic_payload_long_addr_enable {
+    ( $func_name:ident, $x:expr ) => {
+        /// Enables the nth pipe with a dynamic payload configuration.
+        pub fn $func_name(mut self, enable_auto_ack: bool, pipe_addr: &[u8]) -> Self {
+            match self.inner.pipes {
+                PipesPayloadSize::Dynamic(ref mut s) => {
+                    s.0[$x] = PipeState::Enable((enable_auto_ack, PipeAddress::from(pipe_addr)))
+                }
+                _ => unreachable!(),
+            }
+            self
+        }
+    };
+}
+
+macro_rules! pipe_config_dynamic_payload_short_addr_enable {
+    ( $func_name:ident, $x:expr ) => {
+        /// Enables the nth pipe with a dynamic payload configuration.
+        pub fn $func_name(mut self, enable_auto_ack: bool, pipe_addr: u8) -> Self {
+            match self.inner.pipes {
+                PipesPayloadSize::Dynamic(ref mut s) => {
+                    s.0[$x] = PipeState::Enable((enable_auto_ack, PipeAddress::Short(pipe_addr)))
+                }
+                _ => unreachable!(),
+            }
+            self
+        }
+    };
+}
+
+impl<const N: usize> PipeConfigBuilder<Static, N> {
+    /// Creates a new pipe builder with a static payload configuration.
+    pub fn static_payload() -> Self {
+        Self {
+            inner: PipeConfig {
+                pipes: PipesPayloadSize::Static(PipesStaticSized([PipeState::Disable; 6])),
+            },
+            payload_size_type: PhantomData::default(),
+        }
+    }
+
+    pipe_config_static_payload_long_addr_enable!(enable_pipe0, 0);
+    pipe_config_static_payload_long_addr_enable!(enable_pipe1, 1);
+    pipe_config_static_payload_short_addr_enable!(enable_pipe2, 2);
+    pipe_config_static_payload_short_addr_enable!(enable_pipe3, 3);
+    pipe_config_static_payload_short_addr_enable!(enable_pipe4, 4);
+    pipe_config_static_payload_short_addr_enable!(enable_pipe5, 5);
+}
+
+impl<const N: usize> PipeConfigBuilder<Dynamic, N> {
+    /// Creates a new pipe builder with a dynamic payload configuration.
+    pub fn dynamic_payload() -> Self {
+        Self {
+            inner: PipeConfig {
+                pipes: PipesPayloadSize::Dynamic(PipesDynamicSized([PipeState::Disable; 6])),
+            },
+            payload_size_type: PhantomData::default(),
+        }
+    }
+
+    pipe_config_dynamic_payload_long_addr_enable!(enable_pipe0, 0);
+    pipe_config_dynamic_payload_long_addr_enable!(enable_pipe1, 1);
+    pipe_config_dynamic_payload_short_addr_enable!(enable_pipe2, 2);
+    pipe_config_dynamic_payload_short_addr_enable!(enable_pipe3, 3);
+    pipe_config_dynamic_payload_short_addr_enable!(enable_pipe4, 4);
+    pipe_config_dynamic_payload_short_addr_enable!(enable_pipe5, 5);
+}
+
+#[cfg(feature = "micro-fmt")]
+impl<const N: usize> uDebug for PipesDynamicSized<N> {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        f.debug_struct("dynamic sized pipes")?
+            .field("pipe0", &self.0[0])?
+            .field("pipe1", &self.0[1])?
+            .field("pipe2", &self.0[2])?
+            .field("pipe3", &self.0[3])?
+            .field("pipe4", &self.0[4])?
+            .field("pipe5", &self.0[5])?
+            .finish()
+    }
+}
+
+#[cfg(feature = "micro-fmt")]
+impl<const N: usize> uDebug for PipesStaticSized<N> {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        f.debug_struct("static sized pipes")?
+            .field("pipe0", &self.0[0])?
+            .field("pipe1", &self.0[1])?
+            .field("pipe2", &self.0[2])?
+            .field("pipe3", &self.0[3])?
+            .field("pipe4", &self.0[4])?
+            .field("pipe5", &self.0[5])?
+            .finish()
+    }
+}
+
+impl<const N: usize> PipeConfig<N> {
+    pub(crate) fn has_ack_enabled_pipe(&self) -> bool {
+        match self.pipes {
+            PipesPayloadSize::Dynamic(s) => match s.0.iter().find(|x| match x {
+                PipeState::Enable(e) => e.0,
+                _ => false,
+            }) {
+                Some(_) => return true,
+                None => return false,
+            },
+            PipesPayloadSize::Static(s) => match s.0.iter().find(|x| match x {
+                PipeState::Enable(e) => e.1,
+                _ => false,
+            }) {
+                Some(_) => return true,
+                None => return false,
+            },
+        }
+    }
+}
+
+impl Default for PipeConfigBuilder<Static, 5> {
+    fn default() -> Self {
+        Self {
+            inner: PipeConfig {
+                pipes: PipesPayloadSize::Static(PipesStaticSized([
+                    PipeState::Enable((
+                        StaticPayloadSize::default(),
+                        false,
+                        PipeAddress::Long([0x10, 0x10, 0x10, 0x10, 0x10]),
+                    )),
+                    PipeState::Enable((
+                        StaticPayloadSize::default(),
+                        false,
+                        PipeAddress::Long([0x10, 0x10, 0x10, 0x10, 0x10]),
+                    )),
+                    PipeState::Disable,
+                    PipeState::Disable,
+                    PipeState::Disable,
+                    PipeState::Disable,
+                ])),
+            },
+            payload_size_type: PhantomData::default(),
+        }
+    }
+}
+
+impl Default for PipeConfigBuilder<Dynamic, 5> {
+    fn default() -> Self {
+        Self {
+            inner: PipeConfig {
+                pipes: PipesPayloadSize::Dynamic(PipesDynamicSized([
+                    PipeState::Enable((false, PipeAddress::Long([0x10, 0x10, 0x10, 0x10, 0x10]))),
+                    PipeState::Enable((false, PipeAddress::Long([0x10, 0x10, 0x10, 0x10, 0x10]))),
+                    PipeState::Disable,
+                    PipeState::Disable,
+                    PipeState::Disable,
+                    PipeState::Disable,
+                ])),
+            },
+            payload_size_type: PhantomData::default(),
+        }
+    }
+}
+
+#[cfg(feature = "micro-fmt")]
+impl<const N: usize> uDebug for PipeConfig<N> {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        f.debug_struct("receive pipe configuration")?
+            .field("pipes", &self.pipes)?
+            .field("address_width", &N)?
             .finish()
     }
 }
@@ -239,6 +651,46 @@ impl defmt::Format for PALevel {
     }
 }
 
+/// Represents a static payload size.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct StaticPayloadSize(u8);
+
+impl StaticPayloadSize {
+    pub(crate) fn truncate(self) -> Self {
+        Self(core::cmp::min(self.0, MAX_PAYLOAD_SIZE))
+    }
+}
+
+impl Default for StaticPayloadSize {
+    fn default() -> Self {
+        Self(MAX_PAYLOAD_SIZE)
+    }
+}
+
+impl From<u8> for StaticPayloadSize {
+    fn from(size: u8) -> Self {
+        Self(core::cmp::min(size, MAX_PAYLOAD_SIZE))
+    }
+}
+
+impl Deref for StaticPayloadSize {
+    type Target = u8;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(feature = "micro-fmt")]
+impl uDebug for StaticPayloadSize {
+    fn fmt<W: ?Sized>(&self, f: &mut Formatter<'_, W>) -> core::result::Result<(), W::Error>
+    where
+        W: uWrite,
+    {
+        uwrite!(f, "{:?} byte static payloads", self.0)
+    }
+}
+
 /// Enum representing the payload size.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PayloadSize {
@@ -270,6 +722,12 @@ impl From<u8> for PayloadSize {
             0 => Self::Dynamic,
             n => Self::Static(core::cmp::min(n, MAX_PAYLOAD_SIZE)),
         }
+    }
+}
+
+impl From<StaticPayloadSize> for PayloadSize {
+    fn from(s: StaticPayloadSize) -> Self {
+        Self::Static(s.0)
     }
 }
 
@@ -701,6 +1159,7 @@ pub(crate) enum Mode {
     ReceiverMode,
 }
 
+/// A struct to collect all debug infos of the nrf module.
 #[derive(Copy, Clone)]
 pub struct DebugInfo {
     pub(crate) channel: u8,
