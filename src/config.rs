@@ -14,8 +14,8 @@
 //! * `payload_size`:           static payload size of [`MAX_PAYLOAD_SIZE`] bytes.
 //! * `pa_level`:               min amplification level.
 //!
-use crate::register_acces::Register;
 use crate::MAX_PAYLOAD_SIZE;
+use crate::{register_acces::Register, status::Status};
 #[cfg(feature = "micro-fmt")]
 use ufmt::{uDebug, uWrite, uwrite, Formatter};
 
@@ -717,6 +717,7 @@ pub struct DebugInfo {
     pub(crate) auto_ack: u8,
     pub(crate) open_read_pipes: u8,
     pub(crate) awaits_ack: bool,
+    pub(crate) status: Status,
 }
 
 impl core::fmt::Debug for DebugInfo {
@@ -740,6 +741,7 @@ impl core::fmt::Debug for DebugInfo {
                 "enabled_rx_addresses",
                 &format_args!("{:06b}", self.open_read_pipes),
             )
+            .field("status", &self.status)
             .finish()
     }
 }
@@ -751,7 +753,7 @@ impl defmt::Format for DebugInfo {
 
         write!(
             fmt,
-            "Nrf24l01 {{ channel: {}, frequency: {}, data_rate: {}, pa_level: {}, crc_encoding_scheme: {}, payload_size: {}, retry_setup: {}, mode: {}, address_width: {}, awaits_ack: {}, tx_address: {:x}, rx0_address: {}, rx1_address: {}, auto_ack_channels: {:06b} }}",
+            "Nrf24l01 {{ channel: {}, frequency: {}, data_rate: {}, pa_level: {}, crc_encoding_scheme: {}, payload_size: {}, retry_setup: {}, mode: {}, address_width: {}, awaits_ack: {}, tx_address: {:x}, rx0_address: {:x}, rx1_address: {:x}, status: {} auto_ack_channels: {:06b} }}",
             &self.channel,
             &(self.channel as u16 + 2400),
             &self.data_rate,
@@ -763,8 +765,9 @@ impl defmt::Format for DebugInfo {
             &self.addr_width,
             &self.awaits_ack,
             &self.tx_addr,
-            &core::str::from_utf8(&self.rx0_addr).unwrap(),
-            &core::str::from_utf8(&self.rx1_addr).unwrap(),
+            &self.rx0_addr,
+            &self.rx1_addr,
+            &self.status,
             &self.auto_ack
         );
     }
