@@ -175,3 +175,33 @@ impl uDebug for Status {
         }
     }
 }
+
+#[cfg(feature = "de-fmt")]
+struct PipeReadStatus(Option<DataPipe>);
+
+#[cfg(feature = "de-fmt")]
+impl defmt::Format for PipeReadStatus {
+    fn format(&self, fmt: defmt::Formatter) {
+        use defmt::write;
+        let available_str = match self.0 {
+            None => write!(fmt, "No data ready to be read in FIFO"),
+            Some(pipe) => write!(fmt, "Data ready to be read on pipe: {}", &pipe.pipe()),
+        };
+    }
+}
+
+#[cfg(feature = "de-fmt")]
+impl defmt::Format for Status {
+    fn format(&self, fmt: defmt::Formatter) {
+        use defmt::write;
+
+        if !&self.is_valid() {
+            write!(
+                fmt,
+                "Invalid status. Something went wrong during communication with nrf24l01"
+            )
+        } else {
+            write!(fmt, "Status {{ Data ready: {}, Data sent: {}, Reached max retries: {}, {}, Transmission FIFO full: {} }}", &self.data_ready(), &self.data_sent(), &self.reached_max_retries(), PipeReadStatus (self.data_pipe_available()), &self.tx_full());
+        }
+    }
+}
