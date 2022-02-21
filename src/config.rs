@@ -1085,6 +1085,17 @@ impl DataPipe {
     pub(crate) fn pipe(&self) -> u8 {
         *self as u8
     }
+
+    pub(crate) fn addr_len_register(&self) -> Register {
+        match *self {
+            DataPipe::DP0 => Register::RX_PW_P0,
+            DataPipe::DP1 => Register::RX_PW_P1,
+            DataPipe::DP2 => Register::RX_PW_P2,
+            DataPipe::DP3 => Register::RX_PW_P3,
+            DataPipe::DP4 => Register::RX_PW_P4,
+            DataPipe::DP5 => Register::RX_PW_P5,
+        }
+    }
 }
 
 impl Default for DataPipe {

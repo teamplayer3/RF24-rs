@@ -337,15 +337,7 @@ where
             self.write_register(Register::EN_AA, 1 << pipe.pipe())?;
         }
         if let Some(payload_len) = payload_len {
-            let register = match pipe.pipe() {
-                0u8 => Register::RX_PW_P0,
-                1 => Register::RX_PW_P0,
-                2 => Register::RX_PW_P0,
-                3 => Register::RX_PW_P0,
-                4 => Register::RX_PW_P0,
-                5 => Register::RX_PW_P0,
-                _ => unreachable!(),
-            };
+            let register = pipe.addr_len_register();
             self.write_register(register, *payload_len)?;
         }
         let rx_address_reg: Register = pipe.into();
